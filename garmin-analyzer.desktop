@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Garmin Analyzer
+Comment=Analyze Garmin Connect training data with advanced metrics
+Exec=/home/fausto/Garmin-app/.venv/bin/python /home/fausto/Garmin-app/gui.py
+Icon=/home/fausto/Garmin-app/icon.png
+Terminal=false
+Type=Application
+Categories=Sports;Health;Utility;
+Keywords=garmin;training;triathlon;cycling;running;swimming;
+StartupNotify=true

@@ -332,8 +332,12 @@ def calculate_readiness_metrics(df, sleep_data=None, wellness_data=None):
     
     # Fall back to activity HR if no wellness data
     if resting_hr is None:
-        recent_df = df[df['averageHR'] > 0].tail(7).copy()
-        all_hr = df[df['averageHR'] > 0]['averageHR']
+        # Filter by actual last 7 days, not row count
+        seven_days_ago = datetime.now() - timedelta(days=7)
+        df_with_hr = df[df['averageHR'] > 0].copy()
+        df_with_hr['startTimeLocal'] = pd.to_datetime(df_with_hr['startTimeLocal'])
+        recent_df = df_with_hr[df_with_hr['startTimeLocal'] >= seven_days_ago]
+        all_hr = df_with_hr['averageHR']
         recent_avg_hr = recent_df['averageHR'].mean() if len(recent_df) > 0 else 0
         overall_avg_hr = all_hr.mean() if len(all_hr) > 0 else 0
     
@@ -431,18 +435,37 @@ def calculate_acute_chronic_ratio(df):
     
     Ideal: 0.8 - 1.3
     > 1.5: High injury risk - back off!
+    
+    Now correctly filters by DATE, not row count.
     """
     if len(df) < 7:
         return None
     
+    # Filter by actual dates, not row count
+    today = datetime.now()
+    acute_cutoff = today - timedelta(days=7)
+    chronic_cutoff = today - timedelta(days=28)
+    
+    # Ensure startTimeLocal is datetime
+    if 'startTimeLocal' not in df.columns:
+        return None
+    
+    df_dated = df.copy()
+    df_dated['startTimeLocal'] = pd.to_datetime(df_dated['startTimeLocal'])
+    
+    # Get activities from last 7 days (acute) and last 28 days (chronic)
+    acute_df = df_dated[df_dated['startTimeLocal'] >= acute_cutoff]
+    chronic_df = df_dated[df_dated['startTimeLocal'] >= chronic_cutoff]
+    
     # Use duration as proxy for load
-    acute = df.tail(7)['duration'].sum() / 60  # minutes
-    chronic = df.tail(28)['duration'].sum() / 60 if len(df) >= 28 else acute
+    acute = acute_df['duration'].sum() / 60  # minutes
+    chronic = chronic_df['duration'].sum() / 60 if len(chronic_df) > 0 else acute
     
     if chronic == 0:
         return None
     
-    acwr = acute / (chronic / 4)  # Normalize to weekly average
+    # ACWR = acute weekly load / chronic weekly average
+    acwr = acute / (chronic / 4)  # Normalize chronic to weekly average
     return acwr
 
 
@@ -504,8 +527,12 @@ def recommend_trainerroad_workout(df, activities_json, acwr, hr_zones, run_decou
     # Analyze TrainerRoad workouts
     tr_workouts = df[df['activityName'].str.contains('TrainerRoad', case=False, na=False)]
     
-    # Get recent TSS from triathlon analysis
-    recent_tss = df.tail(7)['duration'].sum() / 60  # Rough proxy
+    # Get recent TSS from last 7 days (by date, not row count)
+    seven_days_ago = datetime.now() - timedelta(days=7)
+    df_dated = df.copy()
+    df_dated['startTimeLocal'] = pd.to_datetime(df_dated['startTimeLocal'])
+    recent_activities = df_dated[df_dated['startTimeLocal'] >= seven_days_ago]
+    recent_tss = recent_activities['duration'].sum() / 60  # Rough proxy
     
     # Decision tree for workout recommendations
     recommendations = {
@@ -614,6 +641,10 @@ def generate_coaching_brief():
     today = datetime.now()
     cutoff_date = today - timedelta(days=analysis_days)
     
+    # Filter DataFrame by date
+    df['startTimeLocal'] = pd.to_datetime(df['startTimeLocal'])
+    df_filtered = df[df['startTimeLocal'] >= cutoff_date].copy()
+    
     # Filter activities JSON
     activities_filtered = []
     for activity in activities_json:
@@ -631,21 +662,26 @@ def generate_coaching_brief():
     print(f"To change analysis period, set ANALYSIS_DAYS in .env (options: 7, 30, 60, 90)")
     
     # Calculate all metrics using filtered data for performance
-    readiness = calculate_readiness_metrics(df, sleep_data, wellness_data)  # Uses 7-day window internally
-    acwr = calculate_acute_chronic_ratio(df)  # Uses 7d/28d windows
-    hr_zones = analyze_hr_zones(df, activities_filtered)
+    # Use df_filtered for analysis, df for metrics that need full history (FTP)
+    readiness = calculate_readiness_metrics(df_filtered, sleep_data, wellness_data)  # Uses 7-day window internally
+    acwr = calculate_acute_chronic_ratio(df_filtered)  # Uses 7d/28d windows
+    hr_zones = analyze_hr_zones(df_filtered, activities_filtered)
     run_decoupling = calculate_run_decoupling(activities_filtered)
     swim_swolf = calculate_swim_swolf(activities_filtered)
-    bike_ef = calculate_bike_efficiency_factor(df, activities_filtered)
-    brick_perf = analyze_brick_performance(df, activities_json)  # Keep all for brick analysis
-    ftp_data = calculate_ftp_from_activities(activities_json)  # Keep all for best FTP
+    bike_ef = calculate_bike_efficiency_factor(df_filtered, activities_filtered)
+    brick_perf = analyze_brick_performance(df_filtered, activities_filtered)  # Use filtered for recent bricks
+    ftp_data = calculate_ftp_from_activities(activities_json)  # Keep all for best FTP ever
     
-    # Calculate TSS by sport
-    acute_load = df.tail(7)['duration'].sum() / 60
-    chronic_load = df.tail(28)['duration'].sum() / 60 if len(df) >= 28 else acute_load
+    # Calculate TSS by sport (using actual date filtering - already handled by df_filtered)
+    today = datetime.now()
+    acute_cutoff = today - timedelta(days=7)
+    chronic_cutoff = today - timedelta(days=28)
+    df_load = df_filtered.copy()
+    acute_load = df_load[df_load['startTimeLocal'] >= acute_cutoff]['duration'].sum() / 60
+    chronic_load = df_load[df_load['startTimeLocal'] >= chronic_cutoff]['duration'].sum() / 60 if len(df_load) >= 28 else acute_load
     
     # Get TrainerRoad workout recommendations
-    tr_recommendations = recommend_trainerroad_workout(df, activities_json, acwr, hr_zones, run_decoupling)
+    tr_recommendations = recommend_trainerroad_workout(df_filtered, activities_filtered, acwr, hr_zones, run_decoupling)
     
     # Get periodization info
     race_info = periodization.get_race_info()
